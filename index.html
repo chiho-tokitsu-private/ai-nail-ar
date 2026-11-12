@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>Voice AI Nail Stylist AR</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #111; color: #fff; font-family: -apple-system, BlinkMacSystemFont, sans-serif; overflow: hidden; height: 100dvh; display: flex; flex-direction: column; }
+    
+    .ar-container { position: relative; flex: 1; width: 100%; overflow: hidden; }
+    video, canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; }
+    
+    .top-bar { position: absolute; top: 12px; left: 12px; right: 12px; display: flex; justify-content: space-between; z-index: 10; }
+    .badge { background: rgba(0,0,0,0.6); backdrop-filter: blur(8px); padding: 6px 12px; border-radius: 20px; font-size: 12px; font-weight: bold; border: 1px solid rgba(255,255,255,0.2); }
+    .icon-btn { background: rgba(0,0,0,0.6); backdrop-filter: blur(8px); color: #fff; border: 1px solid rgba(255,255,255,0.2); border-radius: 20px; padding: 6px 10px; font-size: 12px; cursor: pointer; }
+
+    .agent-panel { background: rgba(20, 20, 25, 0.92); backdrop-filter: blur(12px); padding: 14px; border-top: 1px solid rgba(255,255,255,0.15); z-index: 10; }
+    .ai-bubble { background: rgba(255, 255, 255, 0.08); border-radius: 12px; padding: 10px 12px; font-size: 13px; line-height: 1.4; margin-bottom: 10px; min-height: 44px; display: flex; align-items: center; }
+    .design-tag { display: inline-block; background: #ff2d55; color: #fff; font-size: 10px; padding: 2px 6px; border-radius: 4px; margin-right: 6px; font-weight: bold; }
+    
+    .input-row { display: flex; gap: 6px; align-items: center; }
+    .mic-btn { background: #333; color: #fff; border: 1px solid rgba(255,255,255,0.25); border-radius: 50%; width: 42px; height: 42px; font-size: 18px; display: flex; justify-content: center; align-items: center; cursor: pointer; flex-shrink: 0; transition: 0.2s; }
+    .mic-btn.recording { background: #ff2d55; border-color: #fff; animation: pulse 1s infinite; }
+    @keyframes pulse { 0% { transform: scale(1); } 50% { transform: scale(1.1); } 100% { transform: scale(1); } }
+
+    input[type="text"] { flex: 1; background: rgba(255,255,255,0.12); border: 1px solid rgba(255,255,255,0.2); border-radius: 20px; padding: 10px 14px; color: #fff; font-size: 14px; outline: none; min-width: 0; }
+    input[type="text"]::placeholder { color: #aaa; }
+    .send-btn { background: linear-gradient(135deg, #ff2d55, #ff6b8b); color: #fff; border: none; border-radius: 20px; padding: 0 16px; height: 42px; font-weight: bold; font-size: 14px; cursor: pointer; flex-shrink: 0; }
+    .send-btn:disabled { opacity: 0.5; }
+
+    .modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.85); z-index: 100; justify-content: center; align-items: center; padding: 20px; }
+    .modal.open { display: flex; }
+    .modal-box { background: #222; padding: 20px; border-radius: 16px; width: 100%; max-width: 360px; }
+    .modal-box h3 { font-size: 16px; margin-bottom: 8px; }
+    .modal-box p { font-size: 12px; color: #bbb; margin-bottom: 12px; line-height: 1.4; }
+    .modal-box input { width: 100%; padding: 10px; border-radius: 8px; border: 1px solid #444; background: #111; color: #fff; margin-bottom: 12px; }
+    .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+</head>
+<body>
+
+  <div class="ar-container">
+    <video id="input_video" playsinline webkit-playsinline autoplay muted></video>
+    <canvas id="output_canvas"></canvas>
+    <div class="top-bar">
+      <div class="badge" id="status_badge">💅 AI Stylist Ready</div>
+      <div>
+        <button class="icon-btn" id="voice_toggle">🔊 音声ON</button>
+        <button class="icon-btn" id="switch_cam">📷</button>
+        <button class="icon-btn" id="open_settings">⚙️</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="agent-panel">
+    <div class="ai-bubble" id="ai_message">
+      <span><span class="design-tag">AIネイリスト</span>🎤ボタンを押して「秋のデートに合うネイルにして」と話しかけてみてください！</span>
+    </div>
+    <div class="input-row">
+      <button class="mic-btn" id="mic_btn" title="音声入力">🎤</button>
+      <input type="text" id="user_prompt" placeholder="声または文字でオーダー...">
+      <button class="send-btn" id="send_btn">提案</button>
+    </div>
+  </div>
+
+  <div class="modal" id="settings_modal">
+    <div class="modal-box">
+      <h3>Gemini APIキー設定</h3>
+      <p>Google AI Studioで取得したAPIキーを入力してください（端末内にのみ保存されます）。</p>
+      <input type="password" id="api_key_input" placeholder="AIzaSy...">
+      <div class="modal-actions">
+        <button class="icon-btn" id="close_settings">閉じる</button>
+        <button class="send-btn" style="height:36px;" id="save_key">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const video = document.getElementById('input_video');
+    const canvas = document.getElementById('output_canvas');
+    const ctx = canvas.getContext('2d');
+    const aiMessage = document.getElementById('ai_message');
+    const userPromptInput = document.getElementById('user_prompt');
+    const sendBtn = document.getElementById('send_btn');
+    const micBtn = document.getElementById('mic_btn');
+    const statusBadge = document.getElementById('status_badge');
+    const voiceToggleBtn = document.getElementById('voice_toggle');
+
+    let useFacingMode = "environment";
+    let isVoiceEnabled = true;
+
+    let currentDesign = {
+      style: "gradient",
+      baseColor: "#f4a4b8",
+      subColor: "#ffffff",
+      finish: "glossy",
+      alpha: 0.72
+    };
+
+    const fingerPairs = [
+      { tip: 4, dip: 3, sizeFactor: 1.1 },
+      { tip: 8, dip: 7, sizeFactor: 0.9 },
+      { tip: 12, dip: 11, sizeFactor: 0.95 },
+      { tip: 16, dip: 15, sizeFactor: 0.9 },
+      { tip: 20, dip: 19, sizeFactor: 0.75 }
+    ];
+
+    // --- 音声読み上げ（TTS）機能 ---
+    function unlockSpeech() {
+      // iOS Safariで非同期通信後に発話させるための権限アンロック
+      if ('speechSynthesis' in window) {
+        const silent = new SpeechSynthesisUtterance('');
+        silent.volume = 0;
+        window.speechSynthesis.speak(silent);
+      }
+    }
+
+    function speakText(text) {
+      if (!isVoiceEnabled || !('speechSynthesis' in window)) return;
+      window.speechSynthesis.cancel(); // 前の発話を停止
+      const uttr = new SpeechSynthesisUtterance(text);
+      uttr.lang = 'ja-JP';
+      uttr.rate = 1.05; // 少しテキパキした自然な速度
+      uttr.pitch = 1.1; // 少し明るめのトーン
+      window.speechSynthesis.speak(uttr);
+    }
+
+    voiceToggleBtn.onclick = () => {
+      isVoiceEnabled = !isVoiceEnabled;
+      voiceToggleBtn.innerText = isVoiceEnabled ? "🔊 音声ON" : "🔇 音声OFF";
+      if (isVoiceEnabled) {
+        unlockSpeech();
+        speakText("音声ガイドをオンにしました");
+      } else {
+        window.speechSynthesis.cancel();
+      }
+    };
+
+    // --- 音声認識（STT）機能 ---
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    let recognition = null;
+    let isRecording = false;
+
+    if (SpeechRecognition) {
+      recognition = new SpeechRecognition();
+      recognition.lang = 'ja-JP';
+      recognition.interimResults = true; // 話している途中も文字を表示
+      recognition.continuous = false;
+
+      recognition.onstart = () => {
+        isRecording = true;
+        micBtn.classList.add('recording');
+        userPromptInput.placeholder = "お話しください...";
+        statusBadge.innerText = "🎙️ 聞き取り中...";
+      };
+
+      recognition.onresult = (event) => {
+        let transcript = '';
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          transcript += event.results[i][0].transcript;
+        }
+        userPromptInput.value = transcript;
+
+        // 発話が確定したら自動でAIエージェントを実行
+        if (event.results[event.results.length - 1].isFinal) {
+          runNailAgent(transcript);
+          userPromptInput.value = '';
+        }
+      };
+
+      recognition.onerror = (event) => {
+        console.error('Speech error:', event.error);
+        statusBadge.innerText = "⚠️ 音声認識エラー";
+      };
+
+      recognition.onend = () => {
+        isRecording = false;
+        micBtn.classList.remove('recording');
+        userPromptInput.placeholder = "声または文字でオーダー...";
+      };
+
+      micBtn.onclick = () => {
+        unlockSpeech(); // タップ時に音声出力もアンロック
+        if (isRecording) {
+          recognition.stop();
+        } else {
+          window.speechSynthesis.cancel();
+          recognition.start();
+        }
+      };
+    } else {
+      micBtn.style.display = 'none'; // 非対応ブラウザでは隠す
+    }
+
+    // --- AR描画処理 ---
+    function onResults(results) {
+      if (canvas.width !== video.videoWidth && video.videoWidth > 0) {
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+      }
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      if (!results.multiHandLandmarks) return;
+
+      for (const landmarks of results.multiHandLandmarks) {
+        fingerPairs.forEach((finger, fIdx) => {
+          const tip = landmarks[finger.tip];
+          const dip = landmarks[finger.dip];
+
+          const tipX = tip.x * canvas.width;
+          const tipY = tip.y * canvas.height;
+          const dipX = dip.x * canvas.width;
+          const dipY = dip.y * canvas.height;
+
+          const dx = tipX - dipX;
+          const dy = tipY - dipY;
+          const length = Math.hypot(dx, dy);
+          const angle = Math.atan2(dy, dx);
+
+          const nailX = tipX - Math.cos(angle) * (length * 0.25);
+          const nailY = tipY - Math.sin(angle) * (length * 0.25);
+          const radiusY = (length * 0.38) * finger.sizeFactor;
+          const radiusX = (length * 0.28) * finger.sizeFactor;
+
+          ctx.save();
+          ctx.translate(nailX, nailY);
+          ctx.rotate(angle + Math.PI / 2);
+
+          ctx.beginPath();
+          ctx.ellipse(0, 0, radiusX, radiusY, 0, 0, 2 * Math.PI);
+          ctx.clip();
+
+          ctx.globalAlpha = currentDesign.alpha;
+          ctx.globalCompositeOperation = 'multiply';
+
+          if (currentDesign.style === 'gradient') {
+            const grad = ctx.createLinearGradient(0, radiusY, 0, -radiusY);
+            grad.addColorStop(0, currentDesign.baseColor);
+            grad.addColorStop(1, currentDesign.subColor);
+            ctx.fillStyle = grad;
+            ctx.fillRect(-radiusX, -radiusY, radiusX * 2, radiusY * 2);
+          } else {
+            ctx.fillStyle = currentDesign.baseColor;
+            ctx.fillRect(-radiusX, -radiusY, radiusX * 2, radiusY * 2);
+          }
+
+          if (currentDesign.style === 'french') {
+            ctx.globalCompositeOperation = 'source-over';
+            ctx.globalAlpha = 0.85;
+            ctx.fillStyle = currentDesign.subColor;
+            ctx.beginPath();
+            ctx.ellipse(0, -radiusY * 0.75, radiusX * 1.1, radiusY * 0.45, 0, 0, 2 * Math.PI);
+            ctx.fill();
+          }
+
+          if (currentDesign.finish === 'glitter') {
+            ctx.globalCompositeOperation = 'lighter';
+            ctx.fillStyle = '#ffffff';
+            for (let i = 0; i < 14; i++) {
+              const gx = Math.sin(i * 12.9898 + fIdx) * radiusX * 0.7;
+              const gy = Math.cos(i * 78.233 + fIdx) * radiusY * 0.7;
+              ctx.globalAlpha = (i % 2 === 0) ? 0.8 : 0.4;
+              ctx.beginPath();
+              ctx.arc(gx, gy, radiusX * 0.08, 0, Math.PI * 2);
+              ctx.fill();
+            }
+          }
+
+          if (currentDesign.finish === 'glossy' || currentDesign.finish === 'glitter') {
+            ctx.globalAlpha = 0.35;
+            ctx.globalCompositeOperation = 'lighter';
+            ctx.fillStyle = '#ffffff';
+            ctx.beginPath();
+            ctx.ellipse(-radiusX * 0.3, -radiusY * 0.15, radiusX * 0.3, radiusY * 0.5, -0.2, 0, 2 * Math.PI);
+            ctx.fill();
+          }
+
+          ctx.restore();
+        });
+      }
+    }
+
+    // --- AIエージェント呼び出し処理 ---
+    async function runNailAgent(promptText) {
+      const apiKey = localStorage.getItem('gemini_api_key');
+      if (!apiKey) {
+        document.getElementById('settings_modal').classList.add('open');
+        return;
+      }
+
+      sendBtn.disabled = true;
+      statusBadge.innerText = "✨ AIがデザイン考案中...";
+      aiMessage.innerHTML = `<span><span class="design-tag">思考中</span>「${promptText}」に合うデザインを考えています...</span>`;
+
+      const systemInstruction = `
+        あなたはトップクラスのAIネイルスタイリストです。
+        ユーザーの要望・服装・シーンを分析し、最適なネイルデザインを考案してAR描画用のJSONパラメータを出力してください。
+        必ず以下のJSONスキーマのみを返してください。
+        {
+          "style": "one-color" または "french" または "gradient" のいずれか,
+          "baseColor": "メインのHEXカラーコード (例: #d8a7b1)",
+          "subColor": "フレンチ先端やグラデーション先のHEXカラーコード (単色の場合はbaseColorと同じ値)",
+          "finish": "glossy"(ツヤ) または "matte"(マット) または "glitter"(ラメ) のいずれか,
+          "alpha": 0.65〜0.85の数値,
+          "title": "デザイン名（10文字以内）",
+          "reason": "音声で読み上げる提案コメント（45文字以内の親しみやすい話し言葉）"
+        }
+      `;
+
+      try {
+        const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            systemInstruction: { parts: [{ text: systemInstruction }] },
+            contents: [{ role: "user", parts: [{ text: promptText }] }],
+            generationConfig: { responseMimeType: "application/json" }
+          })
+        });
+
+        const data = await res.json();
+        if (data.error) throw new Error(data.error.message);
+
+        const rawJson = data.candidates[0].content.parts[0].text;
+        const result = JSON.parse(rawJson);
+
+        currentDesign = {
+          style: result.style || "one-color",
+          baseColor: result.baseColor || "#ff2d55",
+          subColor: result.subColor || "#ffffff",
+          finish: result.finish || "glossy",
+          alpha: result.alpha || 0.72
